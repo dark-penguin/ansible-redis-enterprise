@@ -1,0 +1,128 @@
+---
+- name: Pull the Docker image
+  community.docker.docker_image:
+    name: "{{ redis_image }}"
+    source: pull
+    force_source: true
+  # notify: stop container
+  register: pulled
+  failed_when: false
+  # Sometimes Docker Registry goes down!
+
+- name: Run Redis Enterprise in Docker
+  community.docker.docker_container:
+    name: redis
+    image: "{{ redis_image }}"
+    state: started
+    restart: "{{ pulled.changed }}"
+    capabilities:
+      - sys_resource
+    # ports:
+    #   - "8443:8443"
+    #   - "9443:9443"
+    #   - "8080:8080"
+    #   - "12000:12000"
+    network_mode: host
+    # Redis Enterprise only works in "--het host" mode, according to the docs!
+  throttle: 1
+  # To restart them one-by-one, otherwise the whole cluster goes down!
+
+- name: Check if a cluster is created
+  ansible.builtin.command: "docker exec -it redis rladmin status"
+  register: cluster_present
+  changed_when: cluster_present.rc != 0
+  failed_when: false
+
+- name: Create clusters on each node
+  ansible.builtin.command: >
+    docker exec -it redis
+    rladmin cluster create
+    name {{ ansible_hostname }}.local
+    username {{ cluster_login }} password {{ cluster_password }}
+  when: cluster_present.rc != 0
+  changed_when: true
+  # no_log: true
+  # We are using "ansible_hostname" for the cluster names.
+  # Those hostnames are more likely to be "sane" than "inventory_hostname",
+  # because Ansible inventories can just contain IP addresses instead!
+
+- name: Check if a database is present
+  ansible.builtin.shell: >
+    docker exec -it redis crdb-cli crdb list
+    | grep {{ db_name }} | awk '{print $1;}'
+  # args:
+  #   executable: /bin/bash
+  register: db_present
+  # changed_when: db_present.stdout != ""
+  changed_when: false
+
+- name: Save the host where a database was found
+  run_once: true
+  delegate_to: localhost
+  # changed_when: true
+  changed_when: false
+  with_items: "{{ ansible_play_hosts }}"
+  when: hostvars[item].db_present.stdout != ""
+  ansible.builtin.set_fact:
+    db_exists: "{{ item }}"
+    db_guid: "{{ hostvars[item].db_present.stdout_lines[0] }}"
+
+# - name: Debug
+#   debug:
+#     msg: |
+#       {{ db_exists | default(false) }}
+#       {{ db_guid | default(false) }}
+
+- name: Create a database
+  ansible.builtin.shell: >
+    sleep 10;
+    docker exec -it redis
+    crdb-cli crdb create
+    --name {{ db_name }}
+    --port {{ db_port }}
+    --memory-size {{ db_ram }}
+    --instance fqdn={{ ansible_hostname }}.local,username={{ cluster_login }},password={{ cluster_password }}
+    --password {{ db_password }}
+    --replication false
+    | grep 'CRDB GUID Assigned' | awk '{print $NF;}' | cut -d ':' -f2
+    | sed -r 's/[[:cntrl:]]\[[0-9]{1,3}m//g' | tr -d $'\n'
+  # Damn colored output!
+  # args:
+  #   executable: /bin/bash
+  when: not (db_exists | default(false))
+    and (inventory_hostname == ansible_play_hosts[0])
+  changed_when: true
+  # no_log: true
+  register: db_created
+
+- name: Save the host where a database was created
+  run_once: true
+  delegate_to: localhost
+  changed_when: true
+  with_items: "{{ ansible_play_hosts }}"
+  when: hostvars[item].db_created.stdout | default(false)
+  ansible.builtin.set_fact:
+    db_exists: "{{ item }}"
+    db_guid: "{{ hostvars[item].db_created.stdout }}"
+
+# - name: Debug
+#   debug:
+#     msg: |
+#       {{ db_exists | default(false) }}
+#       {{ db_guid | default(false) }}
+
+- name: Add nodes to the cluster
+  ansible.builtin.shell: >
+    sleep 10;
+    docker exec -it redis
+    crdb-cli crdb add-instance
+    --crdb-guid {{ db_guid }}
+    --instance fqdn={{ ansible_hostname }}.local,username={{ cluster_login }},password={{ cluster_password }}
+  # args:
+  #   executable: /bin/bash
+  throttle: 1
+  delegate_to: "{{ db_exists }}"
+  changed_when: true
+  # no_log: true
+  when: (db_present.stdout == "")
+    and (db_exists | default(false) != inventory_hostname)

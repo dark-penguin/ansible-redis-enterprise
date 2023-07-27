@@ -1,0 +1,14 @@
+---
+- name: Deploy a Redis geodistributed cluster using a role
+  hosts: redis
+  vars_files:
+    - secrets.yml
+
+  roles:
+    - georedis
+
+  pre_tasks:
+    - name: Update APT cache
+      ansible.builtin.apt:
+        update_cache: true
+        cache_valid_time: "{{ 3600 * 12 }}"

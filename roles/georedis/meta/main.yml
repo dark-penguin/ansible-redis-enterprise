@@ -1,0 +1,5 @@
+---
+dependencies:
+  - role: geerlingguy.docker
+  # Those are "runtime" dependencies - "which roles to execute first",
+  # not "which roles to install"!

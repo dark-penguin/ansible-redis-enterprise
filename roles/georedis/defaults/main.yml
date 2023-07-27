@@ -1,0 +1,10 @@
+---
+redis_image: "redislabs/redis:latest"
+cluster_login: "test@test.com"
+
+db_name: "database1"
+db_port: 12000
+db_ram: "512M"
+
+cluster_password: "put_me_in_vault"
+db_password: "vault_me_too"

@@ -1,0 +1,4 @@
+# ansible-lint: Ignore the following rule violations
+# To create this file: 'ansible-lint --generate-ignore'
+
+roles/georedis/tasks/main.yml risky-shell-pipe
